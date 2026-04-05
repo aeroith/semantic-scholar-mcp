@@ -7,14 +7,27 @@ import requests
 from mcp.server import Server
 from mcp.types import Resource, TextContent, Tool
 
+from .rate_limiter import RateLimiter
+
+_rate_limit_to_thread = asyncio.to_thread
+
 
 class SemanticScholarServer:
     """MCP server for Semantic Scholar operations."""
 
-    def __init__(self, api_key: str | None = None) -> None:
+    def __init__(
+        self,
+        api_key: str | None = None,
+        rate_limit_interval: float = 1.0,
+        rate_limit_lock_path: str = "/tmp/.semantic-scholar-rate-lock",
+    ) -> None:
         self.server = Server("semantic-scholar-mcp")
         self.api_key = api_key
         self.base_url = "https://api.semanticscholar.org/graph/v1"
+        self._rate_limiter = RateLimiter(
+            interval=rate_limit_interval,
+            lock_path=rate_limit_lock_path,
+        )
         self._setup_tools()
         self._setup_resources()
         self._setup_handlers()
@@ -394,6 +407,7 @@ URLs are recognized from the following sites:
             if arguments.get("openAccessPdf"):
                 params["openAccessPdf"] = ""
 
+            await _rate_limit_to_thread(self._rate_limiter.acquire)
             response = await asyncio.to_thread(
                 requests.get,
                 f"{self.base_url}/paper/search",
@@ -425,6 +439,7 @@ URLs are recognized from the following sites:
 
             params = {"fields": arguments.get("fields", self.get_paper_default_fields)}
 
+            await _rate_limit_to_thread(self._rate_limiter.acquire)
             response = await asyncio.to_thread(
                 requests.get,
                 f"{self.base_url}/paper/{paper_id}",
@@ -464,6 +479,7 @@ URLs are recognized from the following sites:
                 "limit": min(arguments.get("limit", 100), 1000),
             }
 
+            await _rate_limit_to_thread(self._rate_limiter.acquire)
             response = await asyncio.to_thread(
                 requests.get,
                 f"{self.base_url}/paper/{paper_id}/authors",
@@ -496,6 +512,7 @@ URLs are recognized from the following sites:
             paper_id = arguments["paper_id"]
             citation_format = arguments.get("format", "bibtex").lower()
 
+            await _rate_limit_to_thread(self._rate_limiter.acquire)
             response = await asyncio.to_thread(
                 requests.get,
                 f"{self.base_url}/paper/{paper_id}",

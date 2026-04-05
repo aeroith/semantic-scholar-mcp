@@ -1,5 +1,12 @@
 """Test configuration and fixtures."""
 
+import multiprocessing
+import sys
+
+if sys.platform == "darwin":
+    multiprocessing.set_start_method("fork", force=True)
+
+
 from unittest.mock import MagicMock
 
 import pytest

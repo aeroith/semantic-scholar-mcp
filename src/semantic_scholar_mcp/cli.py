@@ -59,23 +59,28 @@ def serve(
     - stdio: Standard MCP communication via stdin/stdout
     - http: HTTP server with Streamable HTTP for web-based clients
     """
+    import sys
+
+    log = sys.stderr if transport == "stdio" else sys.stdout
+
     if debug:
-        click.echo("Debug mode enabled")
+        click.echo("Debug mode enabled", file=log)
 
     if api_key:
-        click.echo("✓ Semantic Scholar API key configured")
+        click.echo("✓ Semantic Scholar API key configured", file=log)
     else:
         click.echo(
-            "⚠️  No Semantic Scholar API key found (set SEMANTIC_SCHOLAR_API_KEY environment variable for higher rate limits)"
+            "⚠️  No Semantic Scholar API key found (set SEMANTIC_SCHOLAR_API_KEY environment variable for higher rate limits)",
+            file=log,
         )
 
     server_instance = SemanticScholarServer(api_key=api_key)
 
-    click.echo("\nAvailable tools:")
-    click.echo("  • search_paper - Search for papers using Semantic Scholar")
-    click.echo("  • get_paper - Get detailed information about a specific paper")
-    click.echo("  • get_authors - Get authors information for a specific paper")
-    click.echo("  • get_citation - Get citation information in various formats")
+    click.echo("\nAvailable tools:", file=log)
+    click.echo("  • search_paper - Search for papers using Semantic Scholar", file=log)
+    click.echo("  • get_paper - Get detailed information about a specific paper", file=log)
+    click.echo("  • get_authors - Get authors information for a specific paper", file=log)
+    click.echo("  • get_citation - Get citation information in various formats", file=log)
 
     if transport == "http":
         click.echo(f"\nStarting HTTP server on http://{host}:{port}")
@@ -101,9 +106,9 @@ def serve(
 
         uvicorn.run(starlette_app, host=host, port=port)
     else:  # stdio
-        click.echo("\nStarting Semantic Scholar MCP Server...")
-        click.echo("Server will communicate via stdio (MCP standard)")
-        click.echo("Server ready. Waiting for MCP client connection...")
+        click.echo("\nStarting Semantic Scholar MCP Server...", file=log)
+        click.echo("Server will communicate via stdio (MCP standard)", file=log)
+        click.echo("Server ready. Waiting for MCP client connection...", file=log)
 
         async def async_main() -> None:
             async with stdio_server() as (read_stream, write_stream):
