@@ -97,8 +97,16 @@ def serve(
         async def handle_streamable_http(scope, receive, send):
             await session_manager.handle_request(scope, receive, send)
 
+        from contextlib import asynccontextmanager
+
+        @asynccontextmanager
+        async def lifespan(app: Starlette):
+            async with session_manager.run():
+                yield
+
         starlette_app = Starlette(
             debug=debug,
+            lifespan=lifespan,
             routes=[
                 Mount("/mcp", app=handle_streamable_http),
             ],
