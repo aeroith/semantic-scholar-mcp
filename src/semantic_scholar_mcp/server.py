@@ -233,6 +233,24 @@ Examples:
                     },
                 ),
                 Tool(
+                    name="read_paper",
+                    description="Read the full content of a paper as markdown. Resolves the arXiv ID via Semantic Scholar and fetches the paper from HuggingFace papers. Works best with arXiv papers.",
+                    inputSchema={
+                        "type": "object",
+                        "properties": {
+                            "paper_id": {
+                                "type": "string",
+                                "description": """Paper identifier. Accepts:
+- An arXiv ID directly, e.g. `2106.15928`
+- Any Semantic Scholar paper ID format (S2 hash, DOI:, ARXIV:, etc.) — the arXiv ID will be resolved automatically.
+- A HuggingFace paper URL, e.g. `https://huggingface.co/papers/2106.15928`
+- An arXiv URL, e.g. `https://arxiv.org/abs/2106.15928`""",
+                            },
+                        },
+                        "required": ["paper_id"],
+                    },
+                ),
+                Tool(
                     name="get_citation",
                     description="Get citation information in various formats.",
                     inputSchema={
@@ -370,6 +388,8 @@ URLs are recognized from the following sites:
                 return await self._handle_get_authors(arguments)
             elif name == "get_citation":
                 return await self._handle_get_citation(arguments)
+            elif name == "read_paper":
+                return await self._handle_read_paper(arguments)
             else:
                 raise ValueError(f"Unknown tool: {name}")
 
@@ -503,6 +523,94 @@ URLs are recognized from the following sites:
             return [TextContent(type="text", text=res)]
         except Exception as e:
             return [TextContent(type="text", text=f"Error getting authors: {str(e)}")]
+
+    @staticmethod
+    def _extract_arxiv_id(paper_id: str) -> str | None:
+        """Extract arXiv ID from various input formats."""
+        import re
+
+        # Direct arXiv ID pattern (e.g. 2106.15928 or 2106.15928v1)
+        if re.match(r"^\d{4}\.\d{4,5}(v\d+)?$", paper_id):
+            return paper_id
+
+        # ARXIV: prefix
+        if paper_id.upper().startswith("ARXIV:"):
+            return paper_id[6:]
+
+        # HuggingFace URL
+        hf_match = re.search(r"huggingface\.co/papers/(\d{4}\.\d{4,5}(?:v\d+)?)", paper_id)
+        if hf_match:
+            return hf_match.group(1)
+
+        # arXiv URL
+        arxiv_match = re.search(r"arxiv\.org/(?:abs|pdf|html)/(\d{4}\.\d{4,5}(?:v\d+)?)", paper_id)
+        if arxiv_match:
+            return arxiv_match.group(1)
+
+        return None
+
+    async def _resolve_arxiv_id(self, paper_id: str) -> str | None:
+        """Resolve a Semantic Scholar paper ID to an arXiv ID."""
+        arxiv_id = self._extract_arxiv_id(paper_id)
+        if arxiv_id:
+            return arxiv_id
+
+        # Look up via Semantic Scholar API
+        await _rate_limit_to_thread(self._rate_limiter.acquire)
+        response = await asyncio.to_thread(
+            requests.get,
+            f"{self.base_url}/paper/{paper_id}",
+            params={"fields": "externalIds"},
+            headers=self._get_headers(),
+            timeout=30,
+        )
+        if response.status_code != 200:
+            return None
+
+        data = response.json()
+        external_ids = data.get("externalIds", {})
+        return external_ids.get("ArXiv") if external_ids else None
+
+    async def _handle_read_paper(self, arguments: dict[str, Any]) -> list[TextContent]:
+        """Fetch full paper content as markdown via HuggingFace."""
+        try:
+            paper_id = arguments["paper_id"]
+            arxiv_id = await self._resolve_arxiv_id(paper_id)
+
+            if not arxiv_id:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Could not resolve arXiv ID for '{paper_id}'. This tool works best with arXiv papers. Try using an arXiv ID directly (e.g. 2106.15928).",
+                    )
+                ]
+
+            response = await asyncio.to_thread(
+                requests.get,
+                f"https://huggingface.co/papers/{arxiv_id}.md",
+                timeout=60,
+            )
+
+            if response.status_code == 404:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Paper not found on HuggingFace. The paper may not be indexed yet. Try the arXiv HTML version at: https://arxiv.org/html/{arxiv_id}",
+                    )
+                ]
+            elif response.status_code != 200:
+                return [
+                    TextContent(
+                        type="text",
+                        text=f"Error fetching paper: HTTP {response.status_code}",
+                    )
+                ]
+
+            return [TextContent(type="text", text=response.text)]
+        except Exception as e:
+            return [
+                TextContent(type="text", text=f"Error reading paper: {str(e)}")
+            ]
 
     async def _handle_get_citation(
         self, arguments: dict[str, Any]
