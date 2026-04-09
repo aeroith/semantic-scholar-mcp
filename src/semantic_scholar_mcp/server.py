@@ -1,6 +1,7 @@
 """Semantic Scholar MCP Server implementation."""
 
 import asyncio
+import time
 from typing import Any
 
 import requests
@@ -10,6 +11,10 @@ from mcp.types import Resource, TextContent, Tool
 from .rate_limiter import RateLimiter
 
 _rate_limit_to_thread = asyncio.to_thread
+
+RATE_LIMIT_NOTE = """
+
+NOTE: This server is shared and rate-limited to 1 request/second to the Semantic Scholar API. Requests are queued FIFO. If multiple users are active, expect delays. Plan tool calls efficiently — batch what you need from a single paper into one get_paper call with the right fields rather than making multiple calls."""
 
 
 class SemanticScholarServer:
@@ -41,7 +46,7 @@ class SemanticScholarServer:
             return [
                 Tool(
                     name="search_paper",
-                    description="Search for papers using Semantic Scholar. Use 'fields' parameter to customize returned data",
+                    description="Search for papers using Semantic Scholar. Use 'fields' parameter to customize returned data." + RATE_LIMIT_NOTE,
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -143,7 +148,7 @@ Example: `Physics,Mathematics` will return papers with either Physics or Mathema
                 ),
                 Tool(
                     name="get_paper",
-                    description="Get detailed information about a specific paper. Use 'fields' parameter to customize returned data.",
+                    description="Get detailed information about a specific paper. Use 'fields' parameter to customize returned data." + RATE_LIMIT_NOTE,
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -184,7 +189,7 @@ Examples:
                 ),
                 Tool(
                     name="get_authors",
-                    description="Get authors information for a specific paper. Use 'fields' parameter to customize author data returned.",
+                    description="Get authors information for a specific paper. Use 'fields' parameter to customize author data returned." + RATE_LIMIT_NOTE,
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -234,7 +239,7 @@ Examples:
                 ),
                 Tool(
                     name="read_paper",
-                    description="Read the full content of a paper as markdown. Resolves the arXiv ID via Semantic Scholar and fetches the paper from HuggingFace papers. Works best with arXiv papers.",
+                    description="Read the full content of a paper as markdown. Resolves the arXiv ID via Semantic Scholar and fetches the paper from HuggingFace papers. Works best with arXiv papers." + RATE_LIMIT_NOTE,
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -252,7 +257,7 @@ Examples:
                 ),
                 Tool(
                     name="get_citation",
-                    description="Get citation information in various formats.",
+                    description="Get citation information in various formats." + RATE_LIMIT_NOTE,
                     inputSchema={
                         "type": "object",
                         "properties": {
@@ -400,6 +405,26 @@ URLs are recognized from the following sites:
             headers["x-api-key"] = self.api_key
         return headers
 
+    async def _rate_limited_get(
+        self, url: str, params: dict | None = None, timeout: int = 30
+    ) -> tuple[requests.Response, float]:
+        """Make a rate-limited GET request. Returns (response, queue_wait_seconds)."""
+        queue_wait = await _rate_limit_to_thread(self._rate_limiter.acquire)
+        response = await asyncio.to_thread(
+            requests.get,
+            url,
+            params=params,
+            headers=self._get_headers(),
+            timeout=timeout,
+        )
+        return response, queue_wait
+
+    @staticmethod
+    def _timing_suffix(queue_wait: float) -> str:
+        if queue_wait > 1.5:
+            return f"\n\n[Rate limit: waited {queue_wait:.1f}s in queue]"
+        return ""
+
     search_paper_default_fields = "paperId,title,abstract,authors,year,citationCount"
 
     async def _handle_search_paper(
@@ -427,13 +452,8 @@ URLs are recognized from the following sites:
             if arguments.get("openAccessPdf"):
                 params["openAccessPdf"] = ""
 
-            await _rate_limit_to_thread(self._rate_limiter.acquire)
-            response = await asyncio.to_thread(
-                requests.get,
-                f"{self.base_url}/paper/search",
-                params=params,
-                headers=self._get_headers(),
-                timeout=30,
+            response, queue_wait = await self._rate_limited_get(
+                f"{self.base_url}/paper/search", params=params
             )
 
             if response.status_code != 200:
@@ -446,7 +466,7 @@ URLs are recognized from the following sites:
 
             res = response.json()
 
-            return [TextContent(type="text", text=str(res))]
+            return [TextContent(type="text", text=str(res) + self._timing_suffix(queue_wait))]
         except Exception as e:
             return [TextContent(type="text", text=f"Error searching papers: {str(e)}")]
 
@@ -459,13 +479,8 @@ URLs are recognized from the following sites:
 
             params = {"fields": arguments.get("fields", self.get_paper_default_fields)}
 
-            await _rate_limit_to_thread(self._rate_limiter.acquire)
-            response = await asyncio.to_thread(
-                requests.get,
-                f"{self.base_url}/paper/{paper_id}",
-                params=params,
-                headers=self._get_headers(),
-                timeout=30,
+            response, queue_wait = await self._rate_limited_get(
+                f"{self.base_url}/paper/{paper_id}", params=params
             )
 
             if response.status_code == 404:
@@ -480,7 +495,7 @@ URLs are recognized from the following sites:
 
             res = response.json()
 
-            return [TextContent(type="text", text=str(res))]
+            return [TextContent(type="text", text=str(res) + self._timing_suffix(queue_wait))]
         except Exception as e:
             return [
                 TextContent(type="text", text=f"Error getting paper details: {str(e)}")
@@ -499,13 +514,8 @@ URLs are recognized from the following sites:
                 "limit": min(arguments.get("limit", 100), 1000),
             }
 
-            await _rate_limit_to_thread(self._rate_limiter.acquire)
-            response = await asyncio.to_thread(
-                requests.get,
-                f"{self.base_url}/paper/{paper_id}/authors",
-                params=params,
-                headers=self._get_headers(),
-                timeout=30,
+            response, queue_wait = await self._rate_limited_get(
+                f"{self.base_url}/paper/{paper_id}/authors", params=params
             )
 
             if response.status_code == 404:
@@ -520,7 +530,7 @@ URLs are recognized from the following sites:
 
             res = response.json()
 
-            return [TextContent(type="text", text=res)]
+            return [TextContent(type="text", text=str(res) + self._timing_suffix(queue_wait))]
         except Exception as e:
             return [TextContent(type="text", text=f"Error getting authors: {str(e)}")]
 
@@ -556,13 +566,8 @@ URLs are recognized from the following sites:
             return arxiv_id
 
         # Look up via Semantic Scholar API
-        await _rate_limit_to_thread(self._rate_limiter.acquire)
-        response = await asyncio.to_thread(
-            requests.get,
-            f"{self.base_url}/paper/{paper_id}",
-            params={"fields": "externalIds"},
-            headers=self._get_headers(),
-            timeout=30,
+        response, _ = await self._rate_limited_get(
+            f"{self.base_url}/paper/{paper_id}", params={"fields": "externalIds"}
         )
         if response.status_code != 200:
             return None
@@ -620,13 +625,9 @@ URLs are recognized from the following sites:
             paper_id = arguments["paper_id"]
             citation_format = arguments.get("format", "bibtex").lower()
 
-            await _rate_limit_to_thread(self._rate_limiter.acquire)
-            response = await asyncio.to_thread(
-                requests.get,
+            response, queue_wait = await self._rate_limited_get(
                 f"{self.base_url}/paper/{paper_id}",
                 params={"fields": "citationStyles, abstract"},
-                headers=self._get_headers(),
-                timeout=30,
             )
 
             if response.status_code == 404:
@@ -659,7 +660,7 @@ URLs are recognized from the following sites:
             abstract = data.get("abstract", "")
 
             result_text = add_abstract(citation, abstract, citation_format)
-            return [TextContent(type="text", text=result_text)]
+            return [TextContent(type="text", text=result_text + self._timing_suffix(queue_wait))]
         except Exception as e:
             return [
                 TextContent(type="text", text=f"Error generating citation: {str(e)}")

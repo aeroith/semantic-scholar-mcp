@@ -18,9 +18,13 @@ class RateLimiter:
         self._interval = interval
         self._lock_path = Path(lock_path)
 
-    def acquire(self) -> None:
-        """Block until the next rate-limit slot is available."""
+    def acquire(self) -> float:
+        """Block until the next rate-limit slot is available.
+
+        Returns the total time in seconds spent waiting (lock + rate limit).
+        """
         self._lock_path.parent.mkdir(parents=True, exist_ok=True)
+        start = time.time()
 
         with self._lock_path.open("a+", encoding="ascii") as lock_file:
             fcntl.flock(lock_file.fileno(), fcntl.LOCK_EX)
@@ -39,3 +43,5 @@ class RateLimiter:
                 lock_file.flush()
             finally:
                 fcntl.flock(lock_file.fileno(), fcntl.LOCK_UN)
+
+        return time.time() - start
